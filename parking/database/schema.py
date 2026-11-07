@@ -1,6 +1,6 @@
 from datetime import datetime
 from decimal import Decimal
-from typing import Optional
+from typing import Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field
 from parking.database.models import (CameraTypeChoices, DirectionChoices, VehicleEventStatusChoices,
                                      ParkingSessionStatusChoices, BarrierStatusChoices, BarrierCommandTypeChoices,
@@ -23,6 +23,12 @@ class ParkingZoneOut(BaseSchema):
     occupied_count: int
     is_active: bool
 
+class ZoneOccupancyOut(BaseModel):
+    zone_id: int
+    capacity: int
+    occupied_count: int
+    free_count: int
+
 # 2. BARRIER
 class BarrierCreate(BaseModel):
     code: str
@@ -37,6 +43,15 @@ class BarrierOut(BaseSchema):
     status: BarrierStatusChoices
     is_active: bool
     last_seen_at: Optional[datetime] = None
+
+class BarrierOpenRequest(BaseModel):
+    idempotency_key: str = Field(min_length=1, max_length=100)
+    event_id: Optional[int] = None
+    session_id: Optional[int] = None
+
+class BarrierAckRequest(BaseModel):
+    idempotency_key: str = Field(min_length=1, max_length=100)
+    result: Literal["acknowledged", "failed", "timeout"] = "acknowledged"
 
 # 3. CAMERA
 class CameraCreate(BaseModel):
@@ -61,7 +76,7 @@ class CameraOut(BaseSchema):
 # 4. VEHICLE EVENT
 class VehicleEventCreate(BaseModel):
     camera_id: int
-    event_key: str
+    event_key: str = Field(min_length=1, max_length=100)
     plate_raw: Optional[str] = None
     plate_number: Optional[str] = None
     confidence: Optional[Decimal] = Field(
@@ -85,6 +100,9 @@ class VehicleEventOut(BaseSchema):
     passage_confirmed_at: Optional[datetime] = None
     passage_source: Optional[str] = None
 
+class VehicleEventJournalOut(VehicleEventOut):
+    direction: DirectionChoices
+
 # 5. PARKING SESSION
 class ParkingSessionCreate(BaseModel):
     plate_number: str
@@ -101,6 +119,10 @@ class ParkingSessionOut(BaseSchema):
     entry_at: datetime
     exit_at: Optional[datetime] = None
     status: ParkingSessionStatusChoices
+
+class ParkingSessionWithDurationOut(ParkingSessionOut):
+    duration_seconds: int
+    duration_human: str
 
 # 6. BARRIER COMMAND
 class BarrierCommandCreate(BaseModel):
@@ -127,3 +149,19 @@ class PassageConfirm(BaseModel):
     idempotency_key: str
     passage_source: str
     passage_confirmed_at: datetime
+
+# 8. ОТВЕТЫ СЦЕНАРИЕВ
+class RecognizeResult(BaseModel):
+    event: VehicleEventOut
+    direction: DirectionChoices
+    decision: str
+    reason: Optional[str] = None
+    barrier_command: Optional[BarrierCommandOut] = None
+    session_id: Optional[int] = None
+    duration_seconds: Optional[int] = None
+
+class PassageResult(BaseModel):
+    event: VehicleEventOut
+    session: ParkingSessionWithDurationOut
+    occupancy: ZoneOccupancyOut
+    already_confirmed: bool = False
