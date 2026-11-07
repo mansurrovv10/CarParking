@@ -1,18 +1,18 @@
 """empty message
 
-Revision ID: 631f74dd00a6
+Revision ID: 8d5c4ffaa017
 Revises: 
-Create Date: 2026-11-01 17:16:12.167512
+Create Date: 2026-11-07 19:27:56.301703
 
 """
 from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
-from sqlalchemy.dialects import postgresql
+
 
 # revision identifiers, used by Alembic.
-revision: str = '631f74dd00a6'
+revision: str = '8d5c4ffaa017'
 down_revision: Union[str, Sequence[str], None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -32,42 +32,6 @@ def upgrade() -> None:
     sa.CheckConstraint('occupied_count BETWEEN 0 AND capacity', name='ck_zone_occupancy'),
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('parking_code')
-    )
-    op.create_table('tariff',
-    sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
-    sa.Column('name', sa.String(length=100), nullable=False),
-    sa.Column('period_minutes', sa.Integer(), nullable=False),
-    sa.Column('price_per_period', sa.Numeric(precision=12, scale=2), nullable=False),
-    sa.Column('free_minutes', sa.Integer(), nullable=False),
-    sa.Column('valid_from', sa.DateTime(timezone=True), nullable=False),
-    sa.Column('valid_until', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('is_active', sa.Boolean(), nullable=False),
-    sa.CheckConstraint('free_minutes >= 0', name='ck_tariff_free_minutes'),
-    sa.CheckConstraint('period_minutes > 0', name='ck_tariff_period_minutes'),
-    sa.CheckConstraint('price_per_period >= 0', name='ck_tariff_price'),
-    sa.CheckConstraint('valid_until IS NULL OR valid_until > valid_from', name='ck_tariff_valid_dates'),
-    sa.PrimaryKeyConstraint('id')
-    )
-    op.create_table('user',
-    sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
-    sa.Column('username', sa.String(length=30), nullable=False),
-    sa.Column('password_hash', sa.String(length=50), nullable=False),
-    sa.Column('role', sa.Enum('ADMIN', 'OPERATOR', name='rolechoices'), nullable=False),
-    sa.Column('is_active', sa.Boolean(), nullable=False),
-    sa.Column('created_at', sa.Date(), nullable=False),
-    sa.PrimaryKeyConstraint('id'),
-    sa.UniqueConstraint('username')
-    )
-    op.create_table('audit_log',
-    sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
-    sa.Column('actor_id', sa.Integer(), nullable=True),
-    sa.Column('action', sa.String(length=100), nullable=False),
-    sa.Column('entity_type', sa.String(length=50), nullable=False),
-    sa.Column('entity_id', sa.Integer(), nullable=True),
-    sa.Column('details', postgresql.JSONB(astext_type=sa.Text()), nullable=False),
-    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
-    sa.ForeignKeyConstraint(['actor_id'], ['user.id'], ),
-    sa.PrimaryKeyConstraint('id')
     )
     op.create_table('barrier',
     sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
@@ -99,15 +63,15 @@ def upgrade() -> None:
     op.create_table('vehicle_event',
     sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
     sa.Column('event_key', sa.String(length=100), nullable=False),
-    sa.Column('camera_id', sa.Integer(), nullable=False),
     sa.Column('plate_raw', sa.String(length=30), nullable=True),
     sa.Column('plate_number', sa.String(length=30), nullable=True),
     sa.Column('confidence', sa.Numeric(precision=5, scale=4), nullable=True),
     sa.Column('image_path', sa.String(length=500), nullable=True),
     sa.Column('detected_at', sa.DateTime(timezone=True), nullable=False),
-    sa.Column('processing_status', sa.Enum('PENDING', 'RECOGNIZED', 'NEEDS_REVIEW', 'REJECTED', name='vehicleeventstatuschoices'), nullable=False),
+    sa.Column('processing_status', sa.Enum('PENDING', 'RECOGNIZED', 'NEEDS_REVIEW', 'REJECTED', name='vehicle_event_status_choices'), nullable=False),
     sa.Column('passage_confirmed_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('passage_source', sa.String(length=50), nullable=True),
+    sa.Column('camera_id', sa.Integer(), nullable=False),
     sa.CheckConstraint('confidence BETWEEN 0 AND 1', name='ck_vehicle_event_confidence'),
     sa.ForeignKeyConstraint(['camera_id'], ['camera.id'], ),
     sa.PrimaryKeyConstraint('id'),
@@ -119,34 +83,28 @@ def upgrade() -> None:
     sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
     sa.Column('plate_number', sa.String(length=30), nullable=False),
     sa.Column('zone_id', sa.Integer(), nullable=False),
-    sa.Column('tariff_id', sa.Integer(), nullable=False),
     sa.Column('entry_event_id', sa.Integer(), nullable=False),
     sa.Column('exit_event_id', sa.Integer(), nullable=True),
     sa.Column('entry_at', sa.DateTime(timezone=True), nullable=False),
     sa.Column('exit_at', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('status', sa.Enum('ACTIVE', 'CLOSED', name='parkingsessionstatuschoices'), nullable=False),
-    sa.Column('total_amount', sa.Numeric(precision=12, scale=2), nullable=True),
-    sa.Column('exit_allowed_until', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('status', sa.Enum('ACTIVE', 'CLOSED', name='parking_session_status_choices'), nullable=False),
     sa.CheckConstraint('exit_at IS NULL OR exit_at >= entry_at', name='ck_session_exit_after_entry'),
-    sa.CheckConstraint('total_amount IS NULL OR total_amount >= 0', name='ck_session_total_amount'),
     sa.ForeignKeyConstraint(['entry_event_id'], ['vehicle_event.id'], ),
     sa.ForeignKeyConstraint(['exit_event_id'], ['vehicle_event.id'], ),
-    sa.ForeignKeyConstraint(['tariff_id'], ['tariff.id'], ),
     sa.ForeignKeyConstraint(['zone_id'], ['parking_zone.id'], ),
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('entry_event_id'),
     sa.UniqueConstraint('exit_event_id')
     )
-    op.create_index('uq_active_parking_session_plate', 'parking_session', ['plate_number'], unique=True,
-                    postgresql_where=sa.text("status = 'ACTIVE'"))
+    op.create_index('uq_active_parking_session_plate', 'parking_session', ['plate_number'], unique=True, postgresql_where=sa.text("status = 'ACTIVE'"))
     op.create_table('barrier_command',
     sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
     sa.Column('barrier_id', sa.Integer(), nullable=False),
     sa.Column('session_id', sa.Integer(), nullable=True),
     sa.Column('event_id', sa.Integer(), nullable=True),
-    sa.Column('command', sa.Enum('OPEN', name='barriercommandtypechoices'), nullable=False),
+    sa.Column('command', sa.Enum('OPEN', name='barrier_command_type_choices'), nullable=False),
     sa.Column('idempotency_key', sa.String(length=100), nullable=False),
-    sa.Column('status', sa.Enum('PENDING', 'SENT', 'ACKNOWLEDGED', 'FAILED', 'TIMEOUT', name='barriercommandstatuschoices'), nullable=False),
+    sa.Column('status', sa.Enum('PENDING', 'SENT', 'ACKNOWLEDGED', 'FAILED', 'TIMEOUT', name='barrier_command_status_choices'), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.Column('acknowledged_at', sa.DateTime(timezone=True), nullable=True),
     sa.ForeignKeyConstraint(['barrier_id'], ['barrier.id'], ),
@@ -155,42 +113,19 @@ def upgrade() -> None:
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('idempotency_key')
     )
-    op.create_table('payment',
-    sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
-    sa.Column('session_id', sa.Integer(), nullable=False),
-    sa.Column('amount', sa.Numeric(precision=12, scale=2), nullable=False),
-    sa.Column('currency', sa.String(length=3), nullable=False),
-    sa.Column('provider', sa.String(length=50), nullable=False),
-    sa.Column('provider_transaction_id', sa.String(length=100), nullable=True),
-    sa.Column('idempotency_key', sa.String(length=100), nullable=False),
-    sa.Column('status', sa.Enum('PENDING', 'SUCCEEDED', 'FAILED', 'REFUNDED', name='paymentstatuschoices'), nullable=False),
-    sa.Column('confirmed_at', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
-    sa.CheckConstraint('amount >= 0', name='ck_payment_amount'),
-    sa.ForeignKeyConstraint(['session_id'], ['parking_session.id'], ),
-    sa.PrimaryKeyConstraint('id'),
-    sa.UniqueConstraint('idempotency_key'),
-    sa.UniqueConstraint('provider', 'provider_transaction_id', name='uq_payment_provider_transaction')
-    )
-    op.create_index(op.f('ix_payment_session_id'), 'payment', ['session_id'], unique=False)
     # ### end Alembic commands ###
 
 
 def downgrade() -> None:
     """Downgrade schema."""
     # ### commands auto generated by Alembic - please adjust! ###
-    op.drop_index(op.f('ix_payment_session_id'), table_name='payment')
-    op.drop_table('payment')
     op.drop_table('barrier_command')
-    op.drop_index('uq_active_parking_session_plate', table_name='parking_session', postgresql_where=sa.text("status = 'active'"))
+    op.drop_index('uq_active_parking_session_plate', table_name='parking_session', postgresql_where=sa.text("status = 'ACTIVE'"))
     op.drop_table('parking_session')
     op.drop_index(op.f('ix_vehicle_event_plate_number'), table_name='vehicle_event')
     op.drop_index(op.f('ix_vehicle_event_camera_id'), table_name='vehicle_event')
     op.drop_table('vehicle_event')
     op.drop_table('camera')
     op.drop_table('barrier')
-    op.drop_table('audit_log')
-    op.drop_table('user')
-    op.drop_table('tariff')
     op.drop_table('parking_zone')
     # ### end Alembic commands ###

@@ -2,7 +2,7 @@ from logging.config import fileConfig
 
 from sqlalchemy import engine_from_config
 from sqlalchemy import pool
-from parking.database.models import *
+from parking.database.models import Base
 from alembic import context
 
 # this is the Alembic Config object, which provides
