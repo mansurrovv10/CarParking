@@ -113,10 +113,12 @@ class VehicleEvent(Base):
     confidence: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 4), nullable=True)
     image_path: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    processing_status: Mapped[VehicleEventStatusChoices] = mapped_column(Enum(VehicleEventStatusChoices,
-                                                                              name="vehicle_event_status_choices"),
-                                                                         default=VehicleEventStatusChoices.PENDING,
-                                                                         nullable=False)
+    processing_status: Mapped[VehicleEventStatusChoices] = mapped_column(
+        Enum(VehicleEventStatusChoices, name="vehicleeventstatuschoices"),
+        default=VehicleEventStatusChoices.PENDING,
+        nullable=False
+    )
+
     passage_confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     passage_source: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
 
