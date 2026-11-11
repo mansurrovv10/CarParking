@@ -34,6 +34,7 @@ class BarrierStatusChoices(str, PyEnum):
 
 class BarrierCommandTypeChoices(str, PyEnum):
     OPEN = "open"
+    CLOSE = "close"
 
 class BarrierCommandStatusChoices(str, PyEnum):
     PENDING = "pending"
@@ -180,7 +181,7 @@ class BarrierCommand(Base):
     session_id: Mapped[Optional[int]] = mapped_column(ForeignKey("parking_session.id"), nullable=True)
     event_id: Mapped[Optional[int]] = mapped_column(ForeignKey("vehicle_event.id"), nullable=True)
     command: Mapped[BarrierCommandTypeChoices] = mapped_column(Enum(BarrierCommandTypeChoices,
-                                                                    name="barrier_command_type_choices"),
+                                                                    name="barriercommandtypechoices"),
                                                                default=BarrierCommandTypeChoices.OPEN,
                                                                nullable=False)
     idempotency_key: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)

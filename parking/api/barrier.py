@@ -5,13 +5,15 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from parking.database.db import get_db
-from parking.database.models import (Barrier, BarrierCommand, BarrierCommandStatusChoices, BarrierStatusChoices,
+from parking.database.models import (Barrier, BarrierCommand, BarrierCommandStatusChoices,
+                                     BarrierCommandTypeChoices, BarrierStatusChoices,
                                      ParkingSession, ParkingZone, VehicleEvent)
-from parking.database.schema import (BarrierAckRequest, BarrierCommandOut, BarrierCreate, BarrierOpenRequest,
-                                     BarrierOut)
+from parking.database.schema import (BarrierAckRequest, BarrierCommandOut, BarrierCreate,
+                                     BarrierOpenRequest, BarrierOut)
 from parking.api.barrierCommand import create_open_command
 
 barrier_router = APIRouter(prefix="/barriers", tags=["Barriers"])
+
 
 def _get_barrier_or_404(db: Session, barrier_id: int) -> Barrier:
     barrier = db.get(Barrier, barrier_id)
@@ -64,7 +66,12 @@ def open_barrier(barrier_id: int, data: BarrierOpenRequest, db: Session = Depend
         db.commit()
     except IntegrityError:
         db.rollback()
-        command = db.scalar(select(BarrierCommand).where(BarrierCommand.idempotency_key == data.idempotency_key))
+        command = db.scalar(select(BarrierCommand).where(
+            BarrierCommand.idempotency_key == data.idempotency_key))
+        if (command is None or command.barrier_id != barrier_id
+                or command.command != BarrierCommandTypeChoices.OPEN
+                or command.event_id != data.event_id or command.session_id != data.session_id):
+            raise HTTPException(status.HTTP_409_CONFLICT, "Конфликт ключа команды")
     db.refresh(command)
     return command
 
@@ -72,27 +79,35 @@ def open_barrier(barrier_id: int, data: BarrierOpenRequest, db: Session = Depend
 @barrier_router.post("/{barrier_id}/ack", response_model=BarrierCommandOut)
 def ack_barrier(barrier_id: int, data: BarrierAckRequest, db: Session = Depends(get_db)):
     barrier = _get_barrier_or_404(db, barrier_id)
-    command = db.scalar(select(BarrierCommand)
-                        .where(BarrierCommand.idempotency_key == data.idempotency_key,
-                               BarrierCommand.barrier_id == barrier.id)
-                        .with_for_update())
+    command = db.scalar(
+        select(BarrierCommand).where(
+            BarrierCommand.idempotency_key == data.idempotency_key,
+            BarrierCommand.barrier_id == barrier.id
+        ).with_for_update()
+    )
     if not command:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Команда для этого шлагбаума не найдена")
 
-    final_statuses = {BarrierCommandStatusChoices.ACKNOWLEDGED, BarrierCommandStatusChoices.FAILED,
+    final_statuses = {BarrierCommandStatusChoices.ACKNOWLEDGED,
+                      BarrierCommandStatusChoices.FAILED,
                       BarrierCommandStatusChoices.TIMEOUT}
     if command.status in final_statuses:
         return command
 
     now = datetime.now(timezone.utc)
     barrier.last_seen_at = now
+
     if data.result == "acknowledged":
         command.status = BarrierCommandStatusChoices.ACKNOWLEDGED
         command.acknowledged_at = now
-        barrier.status = BarrierStatusChoices.OPEN
+        if command.command == BarrierCommandTypeChoices.OPEN:
+            barrier.status = BarrierStatusChoices.OPEN
+        elif command.command == BarrierCommandTypeChoices.CLOSE:
+            barrier.status = BarrierStatusChoices.CLOSED
     elif data.result == "failed":
         command.status = BarrierCommandStatusChoices.FAILED
         command.acknowledged_at = now
+        barrier.status = BarrierStatusChoices.UNKNOWN
     else:
         command.status = BarrierCommandStatusChoices.TIMEOUT
         barrier.status = BarrierStatusChoices.UNKNOWN

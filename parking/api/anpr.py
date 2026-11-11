@@ -1,38 +1,39 @@
 import io
 import os
+import re
+import cv2
 import secrets
 import tempfile
-import re
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from uuid import uuid4
-import cv2
+from dotenv import load_dotenv
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.security import APIKeyHeader
-from PIL import Image, UnidentifiedImageError
-from sqlalchemy.orm import Session
-from parking.anpr.pipeline import process_image
-from parking.database.db import get_db
-from parking.database.models import Camera, VehicleEvent, VehicleEventStatusChoices
-from dotenv import load_dotenv
-from parking.config import BASE_DIR
 from PIL import Image, ImageOps, UnidentifiedImageError
 from pillow_heif import register_heif_opener
+from sqlalchemy.orm import Session
+from parking.config import BASE_DIR
+from parking.anpr.pipeline import process_image
+from parking.api.vihicleEvent import recognize
+from parking.database.db import get_db
+from parking.database.models import Camera
+from parking.database.schema import VehicleEventCreate
+
 
 register_heif_opener()
-
-
 load_dotenv(BASE_DIR / ".env")
-
 
 api_key_header = APIKeyHeader(name="X-ANPR-Key", auto_error=False)
 
 
 def authorize(api_key: str | None = Depends(api_key_header)):
     expected = os.getenv("ANPR_API_KEY")
+
     if not expected:
         raise HTTPException(503, "ANPR API key не настроен")
+
     if not api_key or not secrets.compare_digest(api_key, expected):
         raise HTTPException(401, "Неверный API key")
 
@@ -46,18 +47,25 @@ anpr_router = APIRouter(
 
 def get_camera(db: Session, camera_id: int) -> Camera:
     camera = db.get(Camera, camera_id)
+
     if not camera:
         raise HTTPException(404, "Камера не найдена")
+
     if not camera.is_active:
         raise HTTPException(409, "Камера отключена")
+
     return camera
 
 
+def save_results(
+    db: Session,
+    camera_id: int,
+    results: list[dict]
+) -> list[dict]:
 
-def save_results(db: Session, camera_id: int, results: list[dict]) -> list[dict]:
     camera = get_camera(db, camera_id)
     now = datetime.now(timezone.utc)
-    saved = []
+    processed = False
 
     for result in results:
         raw = (result.get("plate_raw") or "").strip()
@@ -67,40 +75,46 @@ def save_results(db: Session, camera_id: int, results: list[dict]) -> list[dict]
             continue
 
         confidence = result.get("confidence")
-        confidence = Decimal(str(confidence)) if confidence is not None else None
 
-        event = VehicleEvent(
+        event_data = VehicleEventCreate(
             event_key=uuid4().hex,
             camera_id=camera_id,
             plate_raw=raw[:30] or None,
             plate_number=plate,
-            confidence=confidence,
-            detected_at=now,
-            processing_status=VehicleEventStatusChoices.NEEDS_REVIEW
+            confidence=(
+                Decimal(str(confidence))
+                if confidence is not None else None
+            ),
+            detected_at=now
         )
 
-        db.add(event)
-        saved.append((result, event))
+        decision = recognize(data=event_data, db=db)
+        processed = True
 
-    camera.last_seen_at = now
+        result["event_id"] = decision.event.id
+        result["decision"] = decision.decision
+        result["reason"] = decision.reason
+        result["session_id"] = decision.session_id
 
-    try:
-        db.flush()
-        for result, event in saved:
-            result["event_id"] = event.id
+        result["barrier_command"] = (
+            decision.barrier_command.model_dump(mode="json")
+            if decision.barrier_command else None
+        )
+
+    if not processed:
+        camera.last_seen_at = now
         db.commit()
-    except Exception:
-        db.rollback()
-        raise
 
     return results
 
 
-
-def analyze_frame(db: Session, camera_id: int, image: Image.Image) -> list[dict]:
+def analyze_frame(
+    db: Session,
+    camera_id: int,
+    image: Image.Image
+) -> list[dict]:
     get_camera(db, camera_id)
     return save_results(db, camera_id, process_image(image))
-
 
 
 @anpr_router.post("/image")
@@ -112,6 +126,7 @@ def recognize_image(
     get_camera(db, camera_id)
 
     data = file.file.read(15 * 1024 * 1024 + 1)
+
     if len(data) > 15 * 1024 * 1024:
         raise HTTPException(413, "Изображение больше 15 MB")
 
@@ -129,8 +144,6 @@ def recognize_image(
     return {"source": "image", "results": results}
 
 
-
-
 @anpr_router.post("/video")
 def recognize_video(
     camera_id: int = Form(...),
@@ -142,6 +155,7 @@ def recognize_video(
     max_mb = max(1, int(os.getenv("ANPR_MAX_VIDEO_MB", "2048")))
     frame_step = max(1, int(os.getenv("ANPR_FRAME_STEP", "5")))
     suffix = Path(file.filename or "").suffix.lower()[:16]
+
     path, cap = None, None
 
     try:
@@ -172,6 +186,7 @@ def recognize_video(
 
         while True:
             ok, frame = cap.read()
+
             if not ok:
                 break
 
@@ -192,8 +207,8 @@ def recognize_video(
                 for result in detected:
                     raw = result.get("plate_raw") or ""
                     plate = result.get("plate_number")
-
                     key = re.sub(r"[^A-Z0-9]", "", (plate or raw).upper())
+
                     if not key:
                         continue
 
@@ -203,7 +218,9 @@ def recognize_video(
                         current = candidates[key]
                         current["frames_seen"] += 1
 
-                        if (result.get("confidence") or 0) > (current.get("confidence") or 0):
+                        if (result.get("confidence") or 0) > (
+                            current.get("confidence") or 0
+                        ):
                             count = current["frames_seen"]
                             current.update(result)
                             current["frames_seen"] = count
@@ -236,9 +253,9 @@ def recognize_video(
     finally:
         if cap is not None:
             cap.release()
+
         if path is not None:
             path.unlink(missing_ok=True)
-
 
 
 @anpr_router.post("/camera/snapshot")
@@ -260,12 +277,15 @@ def recognize_camera(db: Session = Depends(get_db)):
             raise HTTPException(503, "Камера недоступна")
 
         ok, frame = cap.read()
+
         if not ok:
             raise HTTPException(503, "Не удалось получить кадр")
 
-        image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-        results = analyze_frame(db, camera_id, image)
+        image = Image.fromarray(
+            cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        )
 
+        results = analyze_frame(db, camera_id, image)
         return {"source": "camera", "results": results}
 
     finally:
