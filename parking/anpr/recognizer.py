@@ -1,105 +1,75 @@
-import re
+import os
+from collections import defaultdict
 from functools import lru_cache
-
 import cv2
-import easyocr
 import numpy as np
+from paddleocr import TextRecognition
 from PIL import Image, ImageOps
 
-from parking.anpr.plate_parser import parse_plate, normalize_plate
-
-
-CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-REGION_PATTERN = re.compile(r"^(0[1-9]|10|11)$")
-BODY_PATTERN = re.compile(r"^\d{3}[A-Z]{3}$")
+from parking.anpr.plate_parser import normalize_plate, parse_plate
 
 
 @lru_cache(maxsize=1)
 def get_ocr_model():
-    return easyocr.Reader(["en"], gpu=False, verbose=False)
-
-
-def read_text(image: np.ndarray, chars: str = CHARS):
-    detections = get_ocr_model().readtext(
-        image, detail=1, paragraph=False,
-        allowlist=chars, decoder="beamsearch", beamWidth=5
+    return TextRecognition(
+        model_name="PP-OCRv6_medium_rec",
+        model_dir=os.getenv("ANPR_OCR_MODEL_DIR") or None,
+        device="cpu"
     )
 
-    detections.sort(key=lambda x: min(p[0] for p in x[0]))
-    texts = [text for _, text, _ in detections if text.strip()]
-    scores = [float(score) for _, text, score in detections if text.strip()]
 
-    return texts, round(min(scores), 4) if scores else None
+def read_text(image):
+    output = get_ocr_model().predict(input=image, batch_size=1)
+    if not output:
+        return "", 0.0
+
+    data = output[0].json
+    data = data.get("res", data)
+    return str(data.get("rec_text") or ""), float(data.get("rec_score") or 0)
 
 
 def recognize_plate(image: Image.Image) -> dict:
-    image = ImageOps.exif_transpose(image).convert("RGB")
-    original = np.asarray(image)
+    rgb = np.asarray(ImageOps.exif_transpose(image).convert("RGB"))
+    original = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
 
-    scale = min(3.0, max(1.0, 900 / image.width))
-    width = max(1, round(image.width * scale))
-    height = max(1, round(image.height * scale))
+    h, w = original.shape[:2]
+    enlarged = cv2.resize(original, (w * 2, h * 2), interpolation=cv2.INTER_CUBIC)
 
-    enlarged = cv2.resize(
-        original, (width, height), interpolation=cv2.INTER_CUBIC
-    )
+    gray = cv2.cvtColor(enlarged, cv2.COLOR_BGR2GRAY)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
+    enhanced = cv2.cvtColor(clahe, cv2.COLOR_GRAY2BGR)
 
-    gray = cv2.cvtColor(enlarged, cv2.COLOR_RGB2GRAY)
-    enhanced = cv2.createCLAHE(
-        clipLimit=2.0, tileGridSize=(8, 8)
-    ).apply(gray)
+    readings = []
+    matches = defaultdict(list)
 
-    variants = [original, enlarged, enhanced]
-    best_raw, best_confidence = "", None
-    best_score = (-1, -1.0)
+    for variant in (enlarged, enhanced, original):
+        raw, score = read_text(variant)
+        readings.append((raw, score))
 
-    for variant in variants:
-        texts, confidence = read_text(variant)
-        raw = " ".join(texts)
-        parsed = parse_plate(texts)
+        cleaned = normalize_plate(raw)
+        parsed = parse_plate(cleaned)
 
-        if parsed:
-            return {
-                "plate_raw": raw,
-                "plate_number": parsed["plate_number"],
-                "confidence": confidence,
-                "region": parsed["region"]
-            }
+        if parsed and parsed["plate_number"] == cleaned and score >= 0.80:
+            matches[cleaned].append(score)
 
-        score = (len(normalize_plate(raw)), confidence or 0)
-        if score > best_score:
-            best_raw, best_confidence = raw, confidence
-            best_score = score
+    best_raw = max(readings, key=lambda item: item[1])[0]
+    confirmed = [plate for plate, scores in matches.items() if len(scores) >= 2]
 
-        body = next(
-            (normalize_plate(t) for t in texts
-             if BODY_PATTERN.fullmatch(normalize_plate(t))),
-            None
-        )
-
-        if body:
-            left = variant[:, :max(1, int(variant.shape[1] * 0.30))]
-            regions, region_conf = read_text(left, "0123456789")
-
-            for region in regions:
-                code = normalize_plate(region)
-
-                if REGION_PATTERN.fullmatch(code):
-                    parsed = parse_plate([code, body])
-
-                    if parsed:
-                        return {
-                            "plate_raw": raw,
-                            "plate_number": parsed["plate_number"],
-                            "confidence": min(
-                                confidence or 0, region_conf or 0
-                            ),
-                            "region": parsed["region"]
-                        }
+    if len(confirmed) == 1 and len(matches) == 1:
+        plate = confirmed[0]
+        parsed = parse_plate(plate)
+        return {
+            "plate_raw": best_raw,
+            "plate_number": plate,
+            "confidence": round(min(matches[plate]), 4),
+            "region": parsed["region"],
+            "ocr_status": "FORMAT_VALID"
+        }
 
     return {
         "plate_raw": best_raw,
         "plate_number": None,
-        "confidence": best_confidence,
-        "region": None
+        "confidence": None,
+        "region": None,
+        "ocr_status": "CONFLICT_REVIEW" if len(matches) > 1 else "NOT_RECOGNIZED"
     }

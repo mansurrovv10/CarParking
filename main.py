@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 import uvicorn
 from parking.api import parkingZone, barrier, barrierCommand, camera, parkingSession, vihicleEvent, anpr
+import os
 
 
 parking_app = FastAPI(title="Manas Airport Smart Parking — Backend MVP")
@@ -15,5 +16,16 @@ parking_app.include_router(vihicleEvent.passage_router)
 parking_app.include_router(anpr.anpr_router)
 
 
+from pathlib import Path
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).resolve().parent / "parking" / ".env")
+
+if os.getenv("ANPR_VIRTUAL_BARRIER_ENABLED", "0") == "1":
+    from parking.api.virtual_barrier import router
+    parking_app.include_router(router)
+
+
+
 if __name__ == "__main__":
-    uvicorn.run(parking_app, host="127.0.0.1", port=8000)
+    uvicorn.run(parking_app, host="127.0.0.1", port=8001)
